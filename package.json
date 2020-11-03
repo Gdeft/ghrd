@@ -1,0 +1,19 @@
+{
+  "name": "atfd",
+  "version": "1.0.0",
+  "description": "A pointless GitHub Actions' artifacts downloader using Node.js.",
+  "main": "main.js",
+  "dependencies": {
+    "@octokit/request": "^5.4.9",
+    "chalk": "^4.1.0",
+    "inquirer": "^7.3.3",
+    "node-fetch": "^2.6.1"
+  },
+  "devDependencies": {},
+  "type": "module",
+  "scripts": {
+    "test": "echo test"
+  },
+  "author": "Gdeft",
+  "license": "MIT"
+}
