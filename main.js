@@ -1,12 +1,12 @@
 "use strict";
 
-import chalk from "chalk";
-import fs from "fs";
-import inquirer from "inquirer";
-import octokit from "@octokit/request";
+const chalk = require("chalk");
+const fs = require("fs");
+const inquirer = require("inquirer");
+const octokit = require("@octokit/request");
 
 let config, rawInputs, inputs;
-let atfPrompt, arPrompt, confPrompt, menuPrompt, start;
+let atfPrompt, rlsPrompt,  arPrompt, confPrompt, menuPrompt, start;
 
 const title = "          __             __\n   ____ _/ /_  _________/ /\n  / __ `/ __ \\/ ___/ __  / \n / /_/ / / / / /  / /_/ /  \n \\__, /_/ /_/_/   \\__,_/   \n/____/                     \n                           ";
 const menuPrompts = [
@@ -63,16 +63,18 @@ let isValid = async (user, repository) => {
         return await status == 200 ? true : false;
     }catch(e){
         //do nothing.
-    }
-}
+    };
+};
 
-let bold = (text) => {
+let bold = text => {
     return chalk.bold(text);
-}
+};
 
 /** Artifacts prompt function */
 atfPrompt = async (user, repository) => {
     console.info("Requesting artifacts data..");
+    
+    try{
         const rawList = await octokit.request("GET /repos/:owner/:repo/actions/artifacts", {
             owner: user,
             repo: repository
@@ -82,20 +84,32 @@ atfPrompt = async (user, repository) => {
         //console.log(req);
 
         if(await rawList.status == 200){
-            var data = "";
+            var data = [];
 
             await req.total_count > 0 ? console.info(`Fetched a total of ${req.total_count} ${req.total_count > 1 ? "artifacts" : "artifact"}, showing only ${req.artifacts.length}.`) : console.log("No artifacts found.");
             await req.artifacts.reverse().forEach(a => {
                 let name = chalk.bold.whiteBright(a.name);
                 let id = chalk.white(`ID: ${a.id}`);
-                let size = chalk.white(`${a.size_in_bytes} bytes`);
+                let size = chalk.white(`Size: ${a.size_in_bytes} bytes`);
                 let createdDate = chalk.blackBright(new Date(a.created_at).toUTCString());
 
-                data += `${name}\n${id}\n${size}\n${createdDate}\n\n`;
+                data.push(`${name} ${id} ${size}\n${createdDate} ${req.artifacts.indexOf(a) == req.artifacts.length - 1 ? "(Latest)" : ""}\n`);
             });
 
-            await console.log(data);
-        }
+            let list = {
+                type: "list",
+                name: "artifact",
+                message: "Choose which artifact to download.\n",
+                choices: data.reverse()
+            };
+
+            inquirer.prompt(list).then(input => {
+                console.log("h");
+            });
+        };
+    }catch(e){
+        console.error(e);
+    }
 };
 
 /** Artifacts & releases prompt function */
@@ -127,7 +141,7 @@ confPrompt = async () => {
     }else{
         console.error(chalk.redBright("Cannot find the specified repository, try again."));
         process.exit(1);
-    }
+    };
 };
 
 /** Main menu prompt function. */
