@@ -1,11 +1,12 @@
 "use strict";
 
 const chalk = require("chalk");
+const download = require("download");
 const fs = require("fs");
 const inquirer = require("inquirer");
-const octokit = require("@octokit/request");
+const {Octokit} = require("@octokit/core");
 
-let config, rawInputs, inputs;
+let octokit, config, rawInputs, inputs;
 let atfPrompt, rlsPrompt,  arPrompt, confPrompt, menuPrompt, start;
 
 const title = "          __             __\n   ____ _/ /_  _________/ /\n  / __ `/ __ \\/ ___/ __  / \n / /_/ / / / / /  / /_/ /  \n \\__, /_/ /_/_/   \\__,_/   \n/____/                     \n                           ";
@@ -42,6 +43,22 @@ const confPrompts = [
         }
     },
     {
+        type: "input",
+        name: "authToken",
+        message: "Access token:",
+        default: () => {
+            return config.authToken != undefined ? config.authToken : "";
+        }
+    },
+    {
+        type: "input",
+        name: "directory",
+        message: "Set destination:",
+        default: () => {
+            return config.directory != undefined ? config.directory : "";
+        }
+    },
+    {
         type: "list",
         name: "goBack",
         message: "Finished configuration, go back to the main menu?",
@@ -52,15 +69,35 @@ const confPrompts = [
     }
 ];
 
-/** Checks if the specified repository exists. */
-let isValid = async (user, repository) => {
+let isValidDir = (directory) => {
     try{
-         const status = await octokit.request("GET /repos/:owner/:repo", {
+        if(fs.existsSync(directory)){
+            console.info(chalk.greenBright(`Directory found: \'${directory}\'`));
+            return true;
+        }else{
+            console.error(chalk.redBright("Cannot find the specified directory, try again."));
+            return false;
+        };
+    }catch(e){
+        //do nothing.
+    };
+};
+
+/** Checks if the specified repository exists. */
+let isValidRepo = async (user, repository) => {
+    try{
+        const status = await octokit.request("GET /repos/:owner/:repo", {
             owner: user,
             repo: repository
-         }).then(r => r.status);
+        }).then(r => r.status);
 
-        return await status == 200 ? true : false;
+        if(status == 200){
+            console.info(chalk.greenBright(`Repository found: \'${user}/${repository}\'`));
+            return true;
+        }else{
+            console.error(chalk.redBright("Cannot find the specified repository, try again."));
+            return false;
+        }
     }catch(e){
         //do nothing.
     };
@@ -70,7 +107,44 @@ let bold = text => {
     return chalk.bold(text);
 };
 
-/** Artifacts prompt function */
+/** Download artifact function. */
+let downloadAtf = async (user, repository, artifact) => {
+    try{
+        console.info("Getting artifact download URL..");
+        
+        const reqAtf = await octokit.request("GET /repos/:owner/:repo/actions/artifacts/:artifact_id/:archive_format", {
+            owner: user,
+            repo: repository,
+            artifact_id: artifact.id,
+            archive_format: "zip"
+        });
+
+        if(await reqAtf.status == 200){
+            await console.info(`Downloading ${artifact.name}.zip..`);
+            await download(reqAtf.url, config.directory);
+            
+            await console.info(`Finished downloading ${artifact.name}, file saved at \'${config.directory}\'`);
+        }else{
+            console.error(chalk.redBright("Failed to get download URL."));
+        };
+    }catch(e){
+        console.error(e);
+    };
+};
+
+/** Download release function. */
+let downloadRls = async (release) => {
+    try{
+        console.info(`Downloading ${release.assets[0].name}..`);
+        await download(release.zipball_url, config.directory);
+        
+        await console.info(`Finished downloading ${release.assets[0].name}, file saved at \'${config.directory}\'`);
+    }catch(e){
+        console.error(e);
+    };
+};
+
+/** Artifacts prompt function. */
 atfPrompt = async (user, repository) => {
     console.info("Requesting artifacts data..");
     
@@ -88,58 +162,108 @@ atfPrompt = async (user, repository) => {
 
             await req.total_count > 0 ? console.info(`Fetched a total of ${req.total_count} ${req.total_count > 1 ? "artifacts" : "artifact"}, showing only ${req.artifacts.length}.`) : console.log("No artifacts found.");
             await req.artifacts.reverse().forEach(a => {
-                let name = chalk.bold.whiteBright(a.name);
-                let id = chalk.white(`ID: ${a.id}`);
-                let size = chalk.white(`Size: ${a.size_in_bytes} bytes`);
-                let createdDate = chalk.blackBright(new Date(a.created_at).toUTCString());
+                let aName = chalk.bold.whiteBright(a.name);
+                let aId = chalk.white(`ID: ${a.id}`);
+                let aSize = chalk.white(`Size: ${a.size_in_bytes} bytes`);
+                let aCreatedDate = chalk.blackBright(new Date(a.created_at).toUTCString());
 
-                data.push(`${name} ${id} ${size}\n${createdDate} ${req.artifacts.indexOf(a) == req.artifacts.length - 1 ? "(Latest)" : ""}\n`);
+                data.push(`${aName} ${aId} ${aSize}\n${aCreatedDate} ${req.artifacts.indexOf(a) == req.artifacts.length - 1 ? "(Latest)" : ""}\n`);
             });
 
-            let list = {
+            let aList = {
                 type: "list",
                 name: "artifact",
                 message: "Choose which artifact to download.\n",
-                choices: data.reverse()
+                choices: data.reverse(),
+                filter: input => {
+                    return req.artifacts[data.reverse().indexOf(input)];
+                }
             };
 
-            inquirer.prompt(list).then(input => {
-                console.log("h");
+            await inquirer.prompt(aList).then(input => {
+                downloadAtf(user, repository, input.artifact);
             });
+        }else{
+            console.error(chalk.redBright("Failed to request artifacts data."));
         };
     }catch(e){
         console.error(e);
-    }
+    };
 };
 
-/** Artifacts & releases prompt function */
+/** Releases prompt function. */
+rlsPrompt = async (user, repository) => {
+    console.info("Requesting releases data..");
+    
+    try{
+        const rawList = await octokit.request("GET /repos/:owner/:repo/releases", {
+            owner: user,
+            repo: repository
+        });
+        
+        const req = rawList.data;
+        
+        if(rawList.status == 200){
+            var data = [];
+            
+            await req.length > 0 ? console.info(`Fetched a total of ${req.length} ${req.length > 1 ? "releases" : "release"}.`) : console.log("No releases found.");
+            await req.forEach(r => {
+                let rName = chalk.bold.whiteBright(`${r.name} | ${r.tag_name}`);
+                let rId = chalk.white(`ID: ${r.id} | ${r.assets[0].id}`);
+                let rSize = chalk.white(`Size: ${r.assets[0].size} bytes`);
+                let rDownloads = chalk.white(`${r.assets[0].download_count} downloads`);
+                let rCreatedDate = chalk.blackBright(new Date(r.created_at).toUTCString());
+                
+                data.push(` \n${rName}\n${rId} ${rSize} | ${rDownloads}\n${rCreatedDate} ${req.indexOf(r) == 0 ? "(Latest)" : ""}\n`);
+            });
+
+            let rList = {
+                type: "list",
+                name: "release",
+                message: "Choose which release to download.\n",
+                choices: data.reverse(),
+                filter: input => {
+                    return req[data.reverse().indexOf(input)];
+                }
+            };
+            
+            await inquirer.prompt(rList).then(input => {
+                downloadRls(input.release);
+            });
+        }else{
+            console.error(chalk.redBright("Failed to request releases data."));
+        };
+    }catch(e){
+        console.error(e);
+    };
+};
+
+/** Artifacts & releases prompt function. */
 arPrompt = () => {
     inquirer.prompt(menuPrompts[1]).then(input => {
         if(input.ar == "Artifacts") atfPrompt(config.user, config.repository);
-        else rlsPrompt();
+        else rlsPrompt(config.user, config.repository);
     });
 }
 
 /** Configuration prompt function. */
 confPrompt = async () => {
-    await inquirer.prompt(confPrompts.slice(0, 2)).then(input => {
+    await inquirer.prompt(confPrompts.slice(0, 4)).then(input => {
+        octokit = new Octokit({auth: input.authToken});
         rawInputs = JSON.stringify(input, null, " ");
         inputs = JSON.parse(rawInputs);
     });
 
-    console.info("\nChecking if the repository exists..");
+    console.info("\nChecking if the repository and directory exists..");
 
-    if(await isValid(inputs.user, inputs.repository)){
-        await fs.writeFileSync("./config.json", rawInputs);
-
-        await console.info(chalk.greenBright(`Repository found: ${inputs.user}/${inputs.repository}\n`));
-        config = JSON.parse(fs.readFileSync("./config.json", "utf-8"));
-
+    if(await isValidRepo(inputs.user, inputs.repository) && isValidDir(inputs.directory)){
         await inquirer.prompt(confPrompts.slice(-1)).then(input => {
             input.goBack ? menuPrompt() : process.exit(0);
         });
+
+        await fs.writeFileSync("./config.json", rawInputs);
+        config = JSON.parse(fs.readFileSync("./config.json", "utf-8"));
     }else{
-        console.error(chalk.redBright("Cannot find the specified repository, try again."));
         process.exit(1);
     };
 };
@@ -160,6 +284,12 @@ start = async () => {
     console.log(`${bold("ghrd")} - ${bold("g")}it${bold("h")}ub ${bold("r")}epository ${bold("d")}ownloader`);
     console.log(`\nA pointless GitHub repository artifacts/releases downloader written\nusing Node.js.\n`);
 
+    try{
+        octokit = new Octokit({auth: config.authToken});
+    }catch(e){
+        console.error(e);
+    };
+    
     menuPrompt();
 };
 
